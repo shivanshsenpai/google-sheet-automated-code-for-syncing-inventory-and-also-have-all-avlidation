@@ -1,0 +1,1007 @@
+function openLabelGeneratorUI() {
+  const html = HtmlService.createHtmlOutputFromFile('4ShipGlobalANDrockethtml')
+    .setWidth(500)
+    .setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Create Labels');
+}
+
+// [SECURITY PATCH] Removed hardcoded Spreadsheet IDs.
+const LABEL_MASTER_SPREADSHEET_ID = 'YOUR_MASTER_SPREADSHEET_ID_HERE';
+const LABEL_CREATE_SHEET_NAME = 'CreateLabels';
+const LABEL_DISPATCHED_SHEET_NAME = 'Dispached';
+const LABEL_ALL_ORDERS_SHEET_NAME = 'All Orders';
+const LABEL_CONFIG_SHEET_NAME = 'Config';
+
+// [SECURITY PATCH] Removed hardcoded Spreadsheet IDs.
+const LABEL_INVENTORY_SPREADSHEET_ID = 'YOUR_INVENTORY_SPREADSHEET_ID_HERE';
+const LABEL_INVENTORY_SHEET_NAME = 'Inventory';
+const LABEL_MATCHING_SHEET_NAME = 'MatchingTable';
+const LABEL_LOG_SHEET_NAME = 'log';
+
+// [SECURITY PATCH] Define default email to prevent hardcoding PII in row builders.
+const DEFAULT_SENDER_EMAIL = 'YOUR_SUPPORT_EMAIL@DOMAIN.COM';
+
+const LABEL_COLS = {
+  INTERNAL_ORDERNO: 1,
+  SKU: 2,
+  FULLNAME: 3,
+  ADDRESSLINE1: 4,
+  ADDRESSLINE2: 5,
+  CITY: 6,
+  STATE: 7,
+  PINCODE: 8,
+  COUNTRY: 9,
+  PHONE: 10,
+  LabelCreated: 11,
+  COURIER_NAME: 12,
+  TRACKING_CODE: 13
+};
+
+const LABEL_DISPATCHED_COLS = {
+  INTERNAL_ORDERNO: 1,
+  SKU: 2,
+  FULLNAME: 3,
+  ADDRESSLINE1: 4,
+  ADDRESSLINE2: 5,
+  CITY: 6,
+  STATE: 7,
+  PINCODE: 8,
+  COUNTRY: 9,
+  PHONE: 10,
+  DISPACHED_STATUS: 11,
+  COURIER_NAME: 12,
+  TRACKING_CODE: 13
+};
+
+function getLogSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  return ss.getSheetByName('log') || ss.getSheetByName('Log');
+}
+
+function logEvent_(level, message, details) {
+  const lv = String(level || 'INFO').toUpperCase();
+  let text = String(message || '');
+
+  if (details !== undefined && details !== null) {
+    if (typeof details === 'string') {
+      text += ' | ' + details;
+    } else {
+      try {
+        text += ' | ' + JSON.stringify(details);
+      } catch (e) {
+        text += ' | [unserializable details]';
+      }
+    }
+  }
+
+  try {
+    const logSheet = getLogSheet_();
+    if (!logSheet) {
+      Logger.log(lv + ': ' + text);
+      return;
+    }
+    logSheet.appendRow([new Date(), lv, text]);
+  } catch (e) {
+    Logger.log('LOG_WRITE_FAILED: ' + e + ' | ' + lv + ': ' + text);
+  }
+}
+
+function labelNormalizeHeaderKey_(value) {
+  return String(value == null ? '' : value).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function labelNormalizeTextKey_(value) {
+  return String(value == null ? '' : value).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function labelBuildHeaderMap_(headers) {
+  const map = {};
+  for (let i = 0; i < headers.length; i++) {
+    const key = labelNormalizeHeaderKey_(headers[i]);
+    if (key && !Object.prototype.hasOwnProperty.call(map, key)) {
+      map[key] = i + 1;
+    }
+  }
+  return map;
+}
+
+function labelGetHeaderColByAliases_(headerMap, aliases) {
+  for (let i = 0; i < aliases.length; i++) {
+    const k = labelNormalizeHeaderKey_(aliases[i]);
+    if (Object.prototype.hasOwnProperty.call(headerMap, k)) {
+      return headerMap[k];
+    }
+  }
+  return 0;
+}
+
+function labelDetectHeaderRowByAliases_(sheet, aliases, maxRowsToScan) {
+  if (!sheet) return 1;
+  const maxRows = Math.min(maxRowsToScan || 5, sheet.getLastRow());
+  const maxCols = sheet.getLastColumn();
+  if (maxRows < 1 || maxCols < 1) return 1;
+
+  const aliasSet = {};
+  for (let i = 0; i < aliases.length; i++) {
+    aliasSet[labelNormalizeHeaderKey_(aliases[i])] = true;
+  }
+
+  for (let r = 1; r <= maxRows; r++) {
+    const row = sheet.getRange(r, 1, 1, maxCols).getValues()[0];
+    for (let c = 0; c < row.length; c++) {
+      if (aliasSet[labelNormalizeHeaderKey_(row[c])]) return r;
+    }
+  }
+
+  return 1;
+}
+
+function getMasterSpreadsheet_() {
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active.getId() === LABEL_MASTER_SPREADSHEET_ID) return active;
+  return SpreadsheetApp.openById(LABEL_MASTER_SPREADSHEET_ID);
+}
+
+function labelEnsureSheetMinColumns_(sheet, minCols) {
+  if (!sheet) return;
+  const maxCols = sheet.getMaxColumns();
+  if (maxCols >= minCols) return;
+  sheet.insertColumnsAfter(maxCols, minCols - maxCols);
+}
+
+function labelEnsureWorkflowSheetStructures_() {
+  const ss = getMasterSpreadsheet_();
+  const createSheet = ss.getSheetByName(LABEL_CREATE_SHEET_NAME);
+  const dispatchedSheet = ss.getSheetByName(LABEL_DISPATCHED_SHEET_NAME);
+
+  if (createSheet) {
+    labelEnsureSheetMinColumns_(createSheet, LABEL_COLS.TRACKING_CODE);
+    createSheet.getRange(1, 1, 1, LABEL_COLS.TRACKING_CODE).setValues([[
+      'INTERNAL_ORDERNO', 'SKU', 'FULLNAME', 'ADDRESSLINE1', 'ADDRESSLINE2',
+      'CITY', 'STATE', 'PINCODE', 'COUNTRY', 'PHONE', 'LabelCreated',
+      'COURIER_NAME', 'TRACKING_CODE'
+    ]]);
+  }
+
+  if (dispatchedSheet) {
+    labelEnsureSheetMinColumns_(dispatchedSheet, LABEL_DISPATCHED_COLS.TRACKING_CODE);
+    dispatchedSheet.getRange(1, 1, 1, LABEL_DISPATCHED_COLS.TRACKING_CODE).setValues([[
+      'INTERNAL_ORDERNO', 'SKU', 'FULLNAME', 'ADDRESSLINE1', 'ADDRESSLINE2',
+      'CITY', 'STATE', 'PINCODE', 'COUNTRY', 'PHONE', 'DISPACHED_STATUS',
+      'COURIER_NAME', 'TRACKING_CODE'
+    ]]);
+  }
+}
+
+function getAllOrdersCache_() {
+  labelEnsureWorkflowSheetStructures_();
+  const ss = getMasterSpreadsheet_();
+  const sheet = ss.getSheetByName(LABEL_ALL_ORDERS_SHEET_NAME);
+  if (!sheet) throw new Error('All Orders sheet not found.');
+
+  const headerRow = labelDetectHeaderRowByAliases_(sheet, ['PORTAL_ORDER_ID', 'INTERNAL_ORDERNO', 'ORDER_STATUS'], 6);
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow <= headerRow || lastCol < 1) {
+    return {
+      sheet: sheet,
+      headerRow: headerRow,
+      dataStartRow: headerRow + 1,
+      headers: [],
+      headerMap: {},
+      rows: []
+    };
+  }
+
+  const headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+  const headerMap = labelBuildHeaderMap_(headers);
+  const dataStartRow = headerRow + 1;
+  const rows = sheet.getRange(dataStartRow, 1, lastRow - headerRow, lastCol).getValues();
+
+  return {
+    sheet: sheet,
+    headerRow: headerRow,
+    dataStartRow: dataStartRow,
+    headers: headers,
+    headerMap: headerMap,
+    rows: rows
+  };
+}
+
+function labelGetAllOrderValue_(cacheEntry, aliases) {
+  if (!cacheEntry) return '';
+  const headerMap = cacheEntry.headerMap || (cacheEntry.cache ? cacheEntry.cache.headerMap : null);
+  const row = cacheEntry.row || [];
+  if (!headerMap) return '';
+  const col = labelGetHeaderColByAliases_(headerMap, aliases);
+  if (!col) return '';
+  return row[col - 1];
+}
+
+function labelFindAllOrderByInternalSku_(cache, internalOrderNo, sku) {
+  const internalCol = labelGetHeaderColByAliases_(cache.headerMap, ['INTERNAL_ORDERNO', 'Internal OrderNo', 'InternalOrderNo']);
+  const skuCol = labelGetHeaderColByAliases_(cache.headerMap, ['SKU', 'PortalSKU']);
+  if (!internalCol || !skuCol) return null;
+
+  const targetInternal = labelNormalizeTextKey_(internalOrderNo);
+  const targetSku = labelNormalizeTextKey_(sku);
+
+  for (let i = 0; i < cache.rows.length; i++) {
+    const row = cache.rows[i];
+    if (labelNormalizeTextKey_(row[internalCol - 1]) !== targetInternal) continue;
+    if (labelNormalizeTextKey_(row[skuCol - 1]) !== targetSku) continue;
+    return {
+      cache: cache,
+      row: row,
+      absRow: cache.dataStartRow + i
+    };
+  }
+
+  for (let j = 0; j < cache.rows.length; j++) {
+    const fallback = cache.rows[j];
+    if (labelNormalizeTextKey_(fallback[internalCol - 1]) === targetInternal) {
+      return {
+        cache: cache,
+        row: fallback,
+        absRow: cache.dataStartRow + j
+      };
+    }
+  }
+
+  return null;
+}
+
+function getCreateLabelRows_() {
+  labelEnsureWorkflowSheetStructures_();
+  const ss = getMasterSpreadsheet_();
+  const sheet = ss.getSheetByName(LABEL_CREATE_SHEET_NAME);
+  if (!sheet) throw new Error('CreateLabels sheet not found.');
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { sheet: sheet, rows: [] };
+
+  const rows = sheet.getRange(2, 1, lastRow - 1, LABEL_COLS.TRACKING_CODE).getValues();
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const internalOrderNo = String(row[LABEL_COLS.INTERNAL_ORDERNO - 1] || '').trim();
+    const sku = String(row[LABEL_COLS.SKU - 1] || '').trim();
+    const labelCreated = String(row[LABEL_COLS.LabelCreated - 1] || '').trim();
+    if (!internalOrderNo || !sku) continue;
+    if (labelCreated.toLowerCase() === 'done') continue;
+
+    out.push({
+      sheetRow: i + 2,
+      row: row,
+      internalOrderNo: internalOrderNo,
+      sku: sku
+    });
+  }
+
+  return { sheet: sheet, rows: out };
+}
+
+function labelParseCourierConfig_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet(); 
+  const sheet = ss.getSheetByName(LABEL_CONFIG_SHEET_NAME);
+  if (!sheet) throw new Error('Config sheet not found.');
+
+  const values = sheet.getDataRange().getValues();
+  const shipglobalCountries = new Set();
+  const shipglobalCodeMap = {};
+  const shiprocketCountries = new Set();
+  const salesChannelCourierMap = {};
+
+  let headerRowIndex = -1;
+  let shipglobalCol = -1;
+  let shipglobalCCodeCol = -1;
+  let shiprocketCol = -1;
+  let shiprocketCCodeCol = -1;
+  let salesChannelCol = -1;
+  let courierNameCol = -1;
+
+  for (let r = 0; r < values.length; r++) {
+    const row = values[r];
+    let lastFound = '';
+    for (let c = 0; c < row.length; c++) {
+      const key = labelNormalizeHeaderKey_(row[c]);
+      if (key === 'shipglobal') {
+        shipglobalCol = c;
+        lastFound = 'global';
+      } else if (key === 'shiprocket') {
+        shiprocketCol = c;
+        lastFound = 'rocket';
+      } else if (key === 'saleschannel') {
+        salesChannelCol = c; 
+      } else if (key === 'couriername') {
+        courierNameCol = c; 
+      } else if (key === 'ccode' || key === 'countrycode') {
+        if (lastFound === 'global' && shipglobalCCodeCol === -1) {
+          shipglobalCCodeCol = c;
+        } else if (lastFound === 'rocket' && shiprocketCCodeCol === -1) {
+          shiprocketCCodeCol = c;
+        }
+      }
+    }
+    if (shipglobalCol >= 0 || shiprocketCol >= 0) {
+      headerRowIndex = r;
+      break;
+    }
+  }
+
+  if (headerRowIndex < 0) {
+    return {
+      shipglobalCountries: shipglobalCountries,
+      shipglobalCodeMap: shipglobalCodeMap,
+      shiprocketCountries: shiprocketCountries,
+      salesChannelCourierMap: salesChannelCourierMap
+    };
+  }
+
+  for (let r = headerRowIndex + 1; r < values.length; r++) {
+    const row = values[r];
+    const globalCountry = shipglobalCol >= 0 ? labelNormalizeTextKey_(row[shipglobalCol]) : '';
+    const ccode = shipglobalCCodeCol >= 0 ? String(row[shipglobalCCodeCol] == null ? '' : row[shipglobalCCodeCol]).trim() : '';
+    const rocketCountry = shiprocketCol >= 0 ? labelNormalizeTextKey_(row[shiprocketCol]) : '';
+
+    if (globalCountry) {
+      shipglobalCountries.add(globalCountry);
+      if (ccode) shipglobalCodeMap[globalCountry] = ccode;
+    }
+    if (rocketCountry) {
+      shiprocketCountries.add(rocketCountry);
+    }
+
+    if (salesChannelCol >= 0 && courierNameCol >= 0) {
+      const salesChannel = labelNormalizeTextKey_(row[salesChannelCol]);
+      const courierName = String(row[courierNameCol] == null ? '' : row[courierNameCol]).trim();
+      if (salesChannel && courierName) {
+        salesChannelCourierMap[salesChannel] = courierName;
+      }
+    }
+  }
+
+  return {
+    shipglobalCountries: shipglobalCountries,
+    shipglobalCodeMap: shipglobalCodeMap,
+    shiprocketCountries: shiprocketCountries,
+    salesChannelCourierMap: salesChannelCourierMap
+  };
+}
+
+function labelSanitizeText(value) {
+  if (!value) return '';
+  let text = String(value);
+  text = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  text = text.replace(/[^a-zA-Z0-9]/g, ' ');
+  text = text.replace(/\s+/g, ' ').trim();
+  return text;
+}
+
+function labelNormalizePhone10_(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw) return '';
+  const clean = raw.toLowerCase().split('ext')[0].replace(/\D/g, '');
+  if (!clean) return '';
+  return clean.length > 10 ? clean.slice(-10) : clean.padStart(10, '0');
+}
+
+function labelSplitName_(fullName) {
+  const text = String(fullName == null ? '' : fullName).trim();
+  if (!text) return { first: '', last: '.' };
+  const parts = text.split(/\s+/);
+  return {
+    first: labelSanitizeText(parts[0]),
+    last: parts.length > 1 ? labelSanitizeText(parts.slice(1).join(' ')) : '.'
+  };
+}
+
+function labelBuildShiprocketRow_(order, todayDisplay) {
+  const row = new Array(33).fill('');
+  const name = labelSplitName_(order.fullName);
+
+  row[0] = order.internalOrderNo;
+  row[1] = 'Custom';
+  row[2] = '="' + todayDisplay + '"';
+  row[3] = 'Sample';
+  row[4] = 'USD';
+  row[5] = name.first;
+  row[6] = name.last;
+  // [SECURITY PATCH] Added default email constant.
+  row[7] = DEFAULT_SENDER_EMAIL; 
+  row[8] = labelNormalizePhone10_(order.phone);
+  row[9] = labelSanitizeText(order.address1);
+  row[10] = labelSanitizeText(order.address2);
+  row[11] = labelSanitizeText(order.country);
+  row[12] = order.pincode || '';
+  row[13] = labelSanitizeText(order.city);
+  row[14] = labelSanitizeText(order.state);
+  row[15] = labelSanitizeText(order.sku);
+  row[16] = 'Fashion Jewellry';
+  row[17] = '71179010';
+  row[18] = String(order.qty || 1);
+  row[21] = '12';
+  row[22] = '="' + todayDisplay + '"';
+  row[23] = '10';
+  row[24] = '3';
+  row[25] = '2';
+  row[26] = '0.05';
+  row[29] = 'CIF';
+  return row;
+}
+
+function labelBuildShipglobalRow_(order, todayIso, shipglobalCode) {
+  const row = new Array(30).fill('');
+  const name = labelSplitName_(order.fullName);
+  const countryKey = labelNormalizeTextKey_(order.country);
+  const usa = countryKey === 'usa' || countryKey === 'united states' || countryKey === 'united states of america';
+
+  row[0] = order.internalOrderNo;
+  row[1] = '="' + todayIso + '"';
+  row[2] = order.internalOrderNo;
+  row[3] = usa ? 'ShipGlobal Super Saver' : 'ShipGlobal Direct';
+  row[4] = '0.05';
+  row[5] = '10';
+  row[6] = '3';
+  row[7] = '2';
+  row[8] = 'USD';
+  row[9] = '="0"';
+  row[10] = name.first;
+  row[11] = name.last;
+
+  const phone = labelNormalizePhone10_(order.phone);
+  row[12] = phone ? '="' + phone + '"' : '';
+  // [SECURITY PATCH] Added default email constant.
+  row[13] = DEFAULT_SENDER_EMAIL;
+  row[15] = labelSanitizeText(order.address1);
+  row[16] = labelSanitizeText(order.address2);
+  row[18] = labelSanitizeText(order.city);
+  row[19] = order.pincode || '';
+  row[20] = shipglobalCode || '';
+  row[21] = labelSanitizeText(order.state);
+  row[22] = 'Jewellry Fashion';
+  row[23] = labelSanitizeText(order.sku);
+  row[24] = String(order.qty || 1);
+  row[25] = '6';
+  row[26] = '71179010';
+  row[27] = '="0"';
+  return row;
+}
+
+function labelGetInventoryContext_() {
+  const ss = SpreadsheetApp.openById(LABEL_INVENTORY_SPREADSHEET_ID);
+  const inventorySheet = ss.getSheetByName(LABEL_INVENTORY_SHEET_NAME);
+  const matchingSheet = ss.getSheetByName(LABEL_MATCHING_SHEET_NAME);
+  const logSheet = ss.getSheetByName(LABEL_LOG_SHEET_NAME) || ss.getSheetByName('Log') || ss.insertSheet(LABEL_LOG_SHEET_NAME);
+  if (!inventorySheet || !matchingSheet) {
+    throw new Error('Inventory or MatchingTable sheet missing in inventory spreadsheet.');
+  }
+
+  const invRows = {};
+  const invDataLast = inventorySheet.getLastRow();
+  if (invDataLast >= 2) {
+    const rows = inventorySheet.getRange(2, 1, invDataLast - 1, 6).getValues();
+    for (let i = 0; i < rows.length; i++) {
+      const vendorSku = String(rows[i][0] || '').trim();
+      if (!vendorSku) continue;
+      invRows[labelNormalizeTextKey_(vendorSku)] = {
+        row: i + 2,
+        stock: Number(rows[i][3]) || 0
+      };
+    }
+  }
+
+  const portalToVendor = {};
+  const matchLast = matchingSheet.getLastRow();
+  if (matchLast >= 2) {
+    const rows = matchingSheet.getRange(2, 1, matchLast - 1, 2).getValues();
+    for (let i = 0; i < rows.length; i++) {
+      const vendorSku = String(rows[i][0] || '').trim();
+      const portalSku = String(rows[i][1] || '').trim();
+      if (vendorSku && portalSku) {
+        portalToVendor[labelNormalizeTextKey_(portalSku)] = vendorSku;
+      }
+    }
+  }
+
+  return {
+    spreadsheet: ss,
+    inventorySheet: inventorySheet,
+    matchingSheet: matchingSheet,
+    logSheet: logSheet,
+    invRows: invRows,
+    portalToVendor: portalToVendor
+  };
+}
+
+function labelAppendInventoryLogRows_(logSheet, rowsToLog) {
+  if (!rowsToLog || rowsToLog.length === 0) return;
+  const startRow = Math.max(logSheet.getLastRow() + 1, 2);
+  logSheet.getRange(startRow, 1, rowsToLog.length, rowsToLog[0].length).setValues(rowsToLog);
+}
+
+function labelCsvString_(rows) {
+  return rows.map(function(r) {
+    return r.map(function(c) {
+      return '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"';
+    }).join(',');
+  }).join('\n');
+}
+
+function labelGetDriveOutputFolder_() {
+  const rootName = 'Label Files';
+  const timezone = Session.getScriptTimeZone() || 'Asia/Kolkata';
+  const monthName = Utilities.formatDate(new Date(), timezone, 'MMMM yyyy');
+
+  let rootFolders = DriveApp.getRootFolder().getFoldersByName(rootName);
+  const root = rootFolders.hasNext() ? rootFolders.next() : DriveApp.getRootFolder().createFolder(rootName);
+
+  let monthFolders = root.getFoldersByName(monthName);
+  return monthFolders.hasNext() ? monthFolders.next() : root.createFolder(monthName);
+}
+
+function labelCreateCsvDriveFile_(baseName, rows) {
+  if (!rows || rows.length <= 1) return null;
+
+  const timezone = Session.getScriptTimeZone() || 'Asia/Kolkata';
+  const stamp = Utilities.formatDate(new Date(), timezone, 'yyyyMMdd_HHmmss');
+  const fileName = baseName + '_' + stamp + '.csv';
+  const blob = Utilities.newBlob(labelCsvString_(rows), 'text/csv', fileName);
+  const folder = labelGetDriveOutputFolder_();
+  const file = folder.createFile(blob);
+
+  try {
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  } catch (err) {
+    // Domain sharing policies can block this; authorized users can still open the Drive URL.
+  }
+
+  return {
+    fileId: file.getId(),
+    fileName: file.getName(),
+    fileUrl: file.getUrl(),
+    folderName: folder.getName()
+  };
+}
+
+function labelBuildInventoryLogRow_(allOrderRow, beforeStock, afterStock) {
+  const out = new Array(47).fill('');
+  const copyCount = Math.min(allOrderRow.length, 42);
+  for (let i = 0; i < copyCount; i++) {
+    let val = allOrderRow[i];
+    if (val !== null && typeof val === 'object' && Object.prototype.toString.call(val) !== '[object Date]') {
+      val = ''; // Scrub CellImage to prevent setValues crash
+    }
+    out[i] = val;
+  }
+
+  if (allOrderRow.length >= 29) out[42] = allOrderRow[28];
+  if (allOrderRow.length >= 41) out[43] = allOrderRow[40];
+
+  out[44] = beforeStock;
+  out[45] = afterStock;
+  out[46] = new Date();
+  return out;
+}
+
+function labelUpdateAllOrdersReadyToShip_(allOrdersCache, processedOrders) {
+  const statusCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['ORDER_STATUS', 'Order Status']);
+  const shippingStatusCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['STATUS', 'Shipping Details Status', 'Shipping Details', 'Status']);
+  const courierCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['COURIER_NAME', 'Courier Name', 'CourierName']);
+  const trackingCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['TRACKING_CODE', 'Tracking Code', 'TrackingCode']);
+  if (!statusCol) return 0;
+
+  const touchedRows = {};
+  for (let i = 0; i < processedOrders.length; i++) {
+    touchedRows[processedOrders[i].allOrder.absRow] = processedOrders[i];
+  }
+
+  let updates = 0;
+  for (const rowNo in touchedRows) {
+    if (!Object.prototype.hasOwnProperty.call(touchedRows, rowNo)) continue;
+    const absRow = Number(rowNo);
+    const rec = touchedRows[rowNo];
+    allOrdersCache.sheet.getRange(absRow, statusCol).setValue('LabelCreated');
+    if (shippingStatusCol) {
+      allOrdersCache.sheet.getRange(absRow, shippingStatusCol).setValue('Pending Dispatch');
+    }
+    if (courierCol) {
+      allOrdersCache.sheet.getRange(absRow, courierCol).setValue(rec.courierName || '');
+    }
+    if (trackingCol) {
+      allOrdersCache.sheet.getRange(absRow, trackingCol).setValue(rec.trackingCode || '');
+    }
+    allOrdersCache.sheet.getRange(absRow, 1, 1, allOrdersCache.headers.length).setBackground('#fff2cc');
+    updates++;
+  }
+  return updates;
+}
+
+function labelMarkCreateLabelsDone_(createSheet, processedOrders) {
+  for (let i = 0; i < processedOrders.length; i++) {
+    createSheet.getRange(processedOrders[i].sheetRow, LABEL_COLS.LabelCreated).setValue('Done');
+    if (processedOrders[i].courierName) {
+      createSheet.getRange(processedOrders[i].sheetRow, LABEL_COLS.COURIER_NAME).setValue(processedOrders[i].courierName);
+    }
+    createSheet.getRange(processedOrders[i].sheetRow, 1, 1, LABEL_COLS.TRACKING_CODE).setBackground('#fff2cc');
+  }
+}
+
+function labelMoveDoneRowsToDispatched_() {
+  labelEnsureWorkflowSheetStructures_();
+  const ss = getMasterSpreadsheet_();
+  const createSheet = ss.getSheetByName(LABEL_CREATE_SHEET_NAME);
+  const dispatchedSheet = ss.getSheetByName(LABEL_DISPATCHED_SHEET_NAME);
+  if (!createSheet || !dispatchedSheet) return { moved: 0 };
+
+  const lastRow = createSheet.getLastRow();
+  if (lastRow < 2) return { moved: 0 };
+
+  const rows = createSheet.getRange(2, 1, lastRow - 1, LABEL_COLS.TRACKING_CODE).getValues();
+  const appendRows = [];
+  const existingKeys = labelBuildDispatchedKeySet_(dispatchedSheet);
+  let allOrdersCache = null;
+  const allOrderRowsToMark = {};
+  const rowsToDelete = [];
+
+  try {
+    allOrdersCache = getAllOrdersCache_();
+  } catch (err) {
+    logEvent_('WARN', 'Could not load All Orders cache while moving Done labels', String(err));
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    const labelStatus = String(rows[i][LABEL_COLS.LabelCreated - 1] || '').trim().toLowerCase();
+    if (labelStatus !== 'done' && labelStatus !== 'yes') continue;
+
+    const row = rows[i];
+    const trackingCode = String(row[LABEL_COLS.TRACKING_CODE - 1] || '').trim();
+    if (!trackingCode) continue; 
+
+    createSheet.getRange(i + 2, 1, 1, LABEL_COLS.LabelCreated).setBackground('#fff2cc');
+    rowsToDelete.push(i + 2);
+    const internalOrderNo = row[LABEL_COLS.INTERNAL_ORDERNO - 1];
+    const sku = row[LABEL_COLS.SKU - 1];
+    const key = labelBuildInternalSkuKey_(internalOrderNo, sku);
+    const courierName = String(row[LABEL_COLS.COURIER_NAME - 1] || '').trim();
+
+    if (allOrdersCache) {
+      const allOrder = labelFindAllOrderByInternalSku_(allOrdersCache, internalOrderNo, sku);
+      if (allOrder && allOrder.absRow) {
+        allOrderRowsToMark[allOrder.absRow] = {
+          courierName: courierName,
+          trackingCode: trackingCode
+        };
+      }
+    }
+
+    if (!key || existingKeys[key]) continue;
+
+    appendRows.push([
+      internalOrderNo,
+      sku,
+      row[LABEL_COLS.FULLNAME - 1],
+      row[LABEL_COLS.ADDRESSLINE1 - 1],
+      row[LABEL_COLS.ADDRESSLINE2 - 1],
+      row[LABEL_COLS.CITY - 1],
+      row[LABEL_COLS.STATE - 1],
+      row[LABEL_COLS.PINCODE - 1],
+      row[LABEL_COLS.COUNTRY - 1],
+      row[LABEL_COLS.PHONE - 1],
+      'Pending Dispatch',
+      courierName,
+      trackingCode
+    ]);
+    existingKeys[key] = true;
+  }
+
+  if (appendRows.length > 0 || rowsToDelete.length > 0) {
+    Utilities.sleep(10000);
+  }
+
+  if (appendRows.length > 0) {
+    const appendStart = Math.max(dispatchedSheet.getLastRow() + 1, 2);
+    dispatchedSheet.getRange(appendStart, 1, appendRows.length, LABEL_DISPATCHED_COLS.TRACKING_CODE).setValues(appendRows);
+    dispatchedSheet.getRange(appendStart, 1, appendRows.length, LABEL_DISPATCHED_COLS.TRACKING_CODE).setBackground('#fff2cc');
+  }
+
+  if (allOrdersCache && allOrdersCache.headers && allOrdersCache.headers.length > 0) {
+    const statusCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['ORDER_STATUS', 'Order Status']);
+    const shippingStatusCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['STATUS', 'Shipping Details Status', 'Shipping Details', 'Status']);
+    const courierCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['COURIER_NAME', 'Courier Name', 'CourierName']);
+    const trackingCol = labelGetHeaderColByAliases_(allOrdersCache.headerMap, ['TRACKING_CODE', 'Tracking Code', 'TrackingCode']);
+    for (const rowNo in allOrderRowsToMark) {
+      if (!Object.prototype.hasOwnProperty.call(allOrderRowsToMark, rowNo)) continue;
+      const absRow = Number(rowNo);
+      const rec = allOrderRowsToMark[rowNo];
+      if (statusCol) {
+        allOrdersCache.sheet.getRange(absRow, statusCol).setValue('LabelCreated');
+      }
+      if (shippingStatusCol) {
+        allOrdersCache.sheet.getRange(absRow, shippingStatusCol).setValue('Pending Dispatch');
+      }
+      if (courierCol) {
+        allOrdersCache.sheet.getRange(absRow, courierCol).setValue(rec.courierName || '');
+      }
+      if (trackingCol) {
+        allOrdersCache.sheet.getRange(absRow, trackingCol).setValue(rec.trackingCode || '');
+      }
+      allOrdersCache.sheet.getRange(absRow, 1, 1, allOrdersCache.headers.length).setBackground('#fff2cc');
+    }
+  }
+
+  if (rowsToDelete.length > 0) {
+    rowsToDelete.sort((a, b) => b - a);
+    for (let d = 0; d < rowsToDelete.length; d++) {
+      createSheet.deleteRow(rowsToDelete[d]);
+    }
+  }
+
+  return { moved: appendRows.length };
+}
+
+function labelBuildInternalSkuKey_(internalOrderNo, sku) {
+  const internalKey = labelNormalizeTextKey_(internalOrderNo);
+  const skuKey = labelNormalizeTextKey_(sku);
+  if (!internalKey || !skuKey) return '';
+  return internalKey + '||' + skuKey;
+}
+
+function labelBuildDispatchedKeySet_(dispatchedSheet) {
+  const keys = {};
+  if (!dispatchedSheet) return keys;
+
+  const lastRow = dispatchedSheet.getLastRow();
+  if (lastRow < 2) return keys;
+
+  const rows = dispatchedSheet.getRange(2, 1, lastRow - 1, Math.max(LABEL_DISPATCHED_COLS.INTERNAL_ORDERNO, LABEL_DISPATCHED_COLS.SKU)).getValues();
+  for (let i = 0; i < rows.length; i++) {
+    const key = labelBuildInternalSkuKey_(
+      rows[i][LABEL_DISPATCHED_COLS.INTERNAL_ORDERNO - 1],
+      rows[i][LABEL_DISPATCHED_COLS.SKU - 1]
+    );
+    if (key) keys[key] = true;
+  }
+
+  return keys;
+}
+
+function precheckCreateLabelRows() {
+  try {
+    const queue = getCreateLabelRows_();
+    const result = {
+      rowsReady: queue.rows.length,
+      rowsTotal: Math.max(queue.sheet.getLastRow() - 1, 0)
+    };
+    logEvent_('INFO', 'Create-label precheck complete', result);
+    return result;
+  } catch (e) {
+    logEvent_('ERROR', 'Create-label precheck failed', String(e));
+    throw e;
+  }
+}
+
+function precheckRefundOrders() {
+  return precheckCreateLabelRows();
+}
+
+function deleteRedRowsFromReadyToShip() {
+  return { deletedRows: 0 };
+}
+
+function generateAllFiles() {
+  const startedAt = new Date();
+  logEvent_('INFO', 'Label generation started');
+
+  const queue = getCreateLabelRows_();
+  if (queue.rows.length === 0) {
+    return {
+      shiprocketCsv: '',
+      shipglobalCsv: '',
+      shiprocketFileUrl: '',
+      shipglobalFileUrl: '',
+      processedRows: 0,
+      movedToDispatched: 0
+    };
+  }
+
+  const courierConfig = labelParseCourierConfig_();
+  const allOrdersCache = getAllOrdersCache_();
+  const inventoryCtx = labelGetInventoryContext_();
+
+  const todayDisplay = Utilities.formatDate(new Date(), 'GMT+5:30', 'dd-MM-yyyy');
+  const todayIso = Utilities.formatDate(new Date(), 'GMT+5:30', 'yyyy-MM-dd');
+
+  const shiprocketData = [[
+    'Order ID', 'Channel', 'Order Date', 'Purpose', 'Currency', 'First Name', 'Last Name',
+    'Email', 'Mobile', 'Address 1', 'Address 2', 'Country', 'Postcode', 'City', 'State',
+    'Master SKU', 'Product Name', 'HSN Code', 'Quantity', 'Tax', 'VAT', 'Unit Price',
+    'Invoice Date', 'Length', 'Breadth', 'Height', 'Weight', 'IOSS', 'EORI', 'Terms',
+    'Franchise', 'Seller ID', 'Courier ID'
+  ]];
+
+  const shipglobalData = [[
+    'invoice_no', 'invoice_date', 'order_reference', 'service', 'package_weight',
+    'package_length', 'package_breadth', 'package_height', 'currency_code', 'csb5_status',
+    'customer_shipping_firstname', 'customer_shipping_lastname', 'customer_shipping_mobile',
+    'customer_shipping_email', 'customer_shipping_company', 'customer_shipping_address',
+    'customer_shipping_address_2', 'customer_shipping_address_3', 'customer_shipping_city',
+    'customer_shipping_postcode', 'customer_shipping_country_code', 'customer_shipping_state',
+    'vendor_order_item_name', 'vendor_order_item_sku', 'vendor_order_item_quantity',
+    'vendor_order_item_unit_price', 'vendor_order_item_hsn', 'vendor_order_item_tax_rate',
+    'ioss_number', 'csbv5_limit_comfirmation'
+  ]];
+
+  const processedOrders = [];
+  const stockChanges = {};
+  const logRows = [];
+
+  for (let i = 0; i < queue.rows.length; i++) {
+    const item = queue.rows[i];
+    const allOrder = labelFindAllOrderByInternalSku_(allOrdersCache, item.internalOrderNo, item.sku);
+    if (!allOrder) {
+      logEvent_('WARN', 'All Orders row not found for create-label row', {
+        internalOrderNo: item.internalOrderNo,
+        sku: item.sku
+      });
+      continue;
+    }
+
+    const order = {
+      internalOrderNo: item.internalOrderNo,
+      sku: item.sku,
+      qty: Number(labelGetAllOrderValue_(allOrder, ['QTY', 'Qty', 'Quantity'])) || 1,
+      salesChannel: labelGetAllOrderValue_(allOrder, ['SALES_CHANNEL', 'Sales Channel']) || '',
+      fullName: labelGetAllOrderValue_(allOrder, ['FULLNAME', 'Fullname', 'Full Name']) || item.row[LABEL_COLS.FULLNAME - 1],
+      address1: labelGetAllOrderValue_(allOrder, ['ADDRESSLINE1', 'AddressLine1']) || item.row[LABEL_COLS.ADDRESSLINE1 - 1],
+      address2: labelGetAllOrderValue_(allOrder, ['ADDRESSLINE2', 'AddressLine2']) || item.row[LABEL_COLS.ADDRESSLINE2 - 1],
+      city: labelGetAllOrderValue_(allOrder, ['CITY', 'City']) || item.row[LABEL_COLS.CITY - 1],
+      state: labelGetAllOrderValue_(allOrder, ['STATE', 'State']) || item.row[LABEL_COLS.STATE - 1],
+      pincode: labelGetAllOrderValue_(allOrder, ['PINCODE', 'Pincode']) || item.row[LABEL_COLS.PINCODE - 1],
+      country: labelGetAllOrderValue_(allOrder, ['COUNTRY', 'Country']) || item.row[LABEL_COLS.COUNTRY - 1],
+      phone: labelGetAllOrderValue_(allOrder, ['PHONE', 'Phone']) || item.row[LABEL_COLS.PHONE - 1]
+    };
+
+    const countryKey = labelNormalizeTextKey_(order.country);
+    const isIndia = countryKey === 'india' || countryKey === 'in';
+    let included = false;
+    let resolvedCourierName = '';
+
+    if (courierConfig.shiprocketCountries.has(countryKey)) {
+      shiprocketData.push(labelBuildShiprocketRow_(order, todayDisplay));
+      included = true;
+      resolvedCourierName = resolvedCourierName || 'Shiprocket';
+    }
+
+    if (courierConfig.shipglobalCountries.has(countryKey)) {
+      shipglobalData.push(labelBuildShipglobalRow_(order, todayIso, courierConfig.shipglobalCodeMap[countryKey] || ''));
+      included = true;
+      resolvedCourierName = resolvedCourierName || 'Shipglobal';
+    }
+
+    if (isIndia) {
+      const salesChannelKey = labelNormalizeTextKey_(order.salesChannel);
+      if (salesChannelKey && courierConfig.salesChannelCourierMap[salesChannelKey]) {
+        resolvedCourierName = courierConfig.salesChannelCourierMap[salesChannelKey];
+      }
+    }
+
+    if (!included && !isIndia) {
+      logEvent_('WARN', 'Country not mapped in Config for label generation', {
+        country: order.country,
+        internalOrderNo: order.internalOrderNo,
+        sku: order.sku
+      });
+      continue;
+    }
+
+    const vendorSku = inventoryCtx.portalToVendor[labelNormalizeTextKey_(order.sku)] || '';
+    if (vendorSku) {
+      const invKey = labelNormalizeTextKey_(vendorSku);
+      const invRow = inventoryCtx.invRows[invKey];
+      if (invRow) {
+        const beforeStock = Number(invRow.stock) || 0;
+        const afterStock = Math.max(0, beforeStock - (Number(order.qty) || 0));
+        invRow.stock = afterStock;
+        stockChanges[invKey] = {
+          row: invRow.row,
+          before: beforeStock,
+          after: afterStock,
+          vendorSku: vendorSku
+        };
+        logRows.push(labelBuildInventoryLogRow_(allOrder.row, beforeStock, afterStock));
+      } else {
+        logRows.push(labelBuildInventoryLogRow_(allOrder.row, '', ''));
+      }
+    } else {
+      logRows.push(labelBuildInventoryLogRow_(allOrder.row, '', ''));
+    }
+
+    if (!resolvedCourierName) {
+      resolvedCourierName = String(item.row[LABEL_COLS.COURIER_NAME - 1] || '').trim();
+    }
+
+    processedOrders.push({
+      sheetRow: item.sheetRow,
+      internalOrderNo: order.internalOrderNo,
+      sku: order.sku,
+      courierName: resolvedCourierName,
+      trackingCode: String(item.row[LABEL_COLS.TRACKING_CODE - 1] || '').trim(),
+      allOrder: allOrder
+    });
+  }
+
+  for (const key in stockChanges) {
+    if (!Object.prototype.hasOwnProperty.call(stockChanges, key)) continue;
+    const stock = stockChanges[key];
+    inventoryCtx.inventorySheet.getRange(stock.row, 4).setValue(stock.after);
+  }
+
+  if (logRows.length > 0) {
+    labelAppendInventoryLogRows_(inventoryCtx.logSheet, logRows);
+  }
+
+  if (processedOrders.length > 0) {
+    labelMarkCreateLabelsDone_(queue.sheet, processedOrders);
+    labelUpdateAllOrdersReadyToShip_(allOrdersCache, processedOrders);
+  }
+
+  const moved = labelMoveDoneRowsToDispatched_();
+
+  if (typeof syncPendingOrdersToStockcheckRTS_ === 'function') {
+    try {
+      syncPendingOrdersToStockcheckRTS_(true);
+    } catch (syncErr) {
+      logEvent_('WARN', 'Queue sync after label generation failed', String(syncErr));
+    }
+  }
+
+  const shiprocketFile = labelCreateCsvDriveFile_('shiprocket', shiprocketData);
+  const shipglobalFile = labelCreateCsvDriveFile_('shipglobal', shipglobalData);
+
+  const summary = {
+    processedRows: processedOrders.length,
+    movedToDispatched: moved.moved || 0,
+    shiprocketRows: Math.max(shiprocketData.length - 1, 0),
+    shipglobalRows: Math.max(shipglobalData.length - 1, 0),
+    shiprocketFileName: shiprocketFile ? shiprocketFile.fileName : '',
+    shipglobalFileName: shipglobalFile ? shipglobalFile.fileName : '',
+    durationMs: new Date().getTime() - startedAt.getTime()
+  };
+  logEvent_('INFO', 'Label generation complete', summary);
+
+  return {
+    shiprocketCsv: '',
+    shipglobalCsv: '',
+    shiprocketFileUrl: shiprocketFile ? shiprocketFile.fileUrl : '',
+    shipglobalFileUrl: shipglobalFile ? shipglobalFile.fileUrl : '',
+    shiprocketFileName: shiprocketFile ? shiprocketFile.fileName : '',
+    shipglobalFileName: shipglobalFile ? shipglobalFile.fileName : '',
+    outputFolderName: (shiprocketFile && shiprocketFile.folderName) || (shipglobalFile && shipglobalFile.folderName) || '',
+    processedRows: summary.processedRows,
+    movedToDispatched: summary.movedToDispatched,
+    shiprocketRows: summary.shiprocketRows,
+    shipglobalRows: summary.shipglobalRows
+  };
+}
+
+function labelHandleOnEditFallback_(e) {
+  try {
+    const sheet = e.source.getActiveSheet();
+    const sheetName = sheet.getName();
+    const range = e.range;
+    const col = range.getColumn();
+    const row = range.getRow();
+    
+    if (sheetName === LABEL_CREATE_SHEET_NAME) {
+      if (col !== LABEL_COLS.TRACKING_CODE || row < 2) return;
+      
+      const newValue = String(e.value || '').trim();
+      if (!newValue) return;
+      
+      const labelCreatedCell = sheet.getRange(row, LABEL_COLS.LabelCreated);
+      const labelCreated = String(labelCreatedCell.getValue() || '').trim().toLowerCase();
+      if (labelCreated !== 'done' && labelCreated !== 'yes') return;
+      
+      labelMoveRowToDispatchedOnEdit_(sheet, row, newValue);
+      return
