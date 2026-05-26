@@ -37,3 +37,36 @@ For this script to function correctly, your Google Spreadsheet ecosystem must co
 ```javascript
    var SHIPPING_TARGET_SPREADSHEET_ID = "YOUR_SHIPPING_SPREADSHEET_ID_HERE";
    var CATALOG_SPREADSHEET_ID = "YOUR_CATALOG_SPREADSHEET_ID_HERE";
+# Warehouse Pick List Generator
+
+An automated Google Apps Script module that creates formatted, color-coded, and dynamically sorted warehouse pick lists directly from pending e-commerce orders, significantly optimizing physical fulfillment.
+
+## 🚀 Key Features
+
+* **Dynamic Location Mapping:** Cross-references pending SKUs in the `stockcheckRTS` queue with the master `Inventory` and `MatchingTable` sheets to pull exact physical warehouse locations (Bins/Racks).
+* **Automated PDF Export:** Auto-generates clean, print-ready PDF files of the pick list and sorts them into organized Google Drive folders (`picklist / [Month] Pick List`).
+* **Direct WhatsApp Integration:** Fetches staff phone numbers dynamically from your `Config` sheet, generates custom WhatsApp URLs, and messages the exported PDF directly to your warehouse team with a single click.
+* **Intelligent UI / Modal View:** Provides a beautiful, color-coded HTML summary of total order lines, quantities, unique locations, and flags missing/problematic SKUs in red before generating the PDF.
+* **Auto-Sorting:** Alphabetically sorts picking sequences by warehouse location to ensure staff take the most efficient physical route through the inventory floor.
+* **Rich Media:** Automatically pulls in and embeds image thumbnails for physical item verification.
+
+## 📑 Sheet Structure Requirements
+
+The Pick List Generator relies on the following sheets existing in your environment:
+
+1. **`stockcheckRTS`**: The source queue containing orders currently pending fulfillment.
+2. **`Picklist`**: The auto-generated sheet created by this script. (Do not manually edit this sheet, as it is wiped and rebuilt every time the script runs).
+3. **`Inventory`**: Master sheet used to pull the `Location` column for a specific `VendorSKU`. 
+4. **`MatchingTable`**: Used to map a sales channel `PortalSKU` to the internal `VendorSKU`.
+5. **`Config` (or `Configuration`)**: Scanned automatically for columns named `picklistphone` and `contactname` to build the WhatsApp contact list.
+
+## 🛠️ Setup & Installation
+
+1. Open your main Google Spreadsheet.
+2. Navigate to **Extensions > Apps Script**.
+3. Create a new script file (e.g., `PickList.gs`) and paste the sanitized code provided above.
+4. **Configure Constants**:
+   At the very top of the script, locate the `[SECURITY PATCH]` tags and replace the placeholder IDs with your actual Spreadsheet IDs.
+   ```javascript
+   var PICK_LIST_ORDER_WORKFLOW_SPREADSHEET_ID = 'YOUR_MASTER_SPREADSHEET_ID_HERE';
+   var PICK_LIST_INVENTORY_SPREADSHEET_ID = 'YOUR_INVENTORY_SPREADSHEET_ID_HERE';
