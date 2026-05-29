@@ -70,3 +70,22 @@ The Pick List Generator relies on the following sheets existing in your environm
    ```javascript
    var PICK_LIST_ORDER_WORKFLOW_SPREADSHEET_ID = 'YOUR_MASTER_SPREADSHEET_ID_HERE';
    var PICK_LIST_INVENTORY_SPREADSHEET_ID = 'YOUR_INVENTORY_SPREADSHEET_ID_HERE';
+# Anonymous Inventory Data Processor (Vulnerable Edition)
+
+## Overview
+This codebase is an anonymized Google Apps Script intended to process inventory data from a Google Sheet based on dynamic templates. It has been intentionally stripped of identifying variables, IDs, and specific business logic to serve as a generic example. 
+
+**⚠️ CRITICAL WARNING: This code is intentionally vulnerable. Do NOT deploy this in a production environment.**
+
+## Educational Purpose
+This script is designed for Capture The Flag (CTF) challenges, code reviews, and security training. It highlights the dangers of trusting user-supplied data within server-side Google Apps Script environments.
+
+## Vulnerabilities Included
+1. **Arbitrary Code Execution (Server-Side):** The script reads template configurations directly from a spreadsheet and uses `eval()` to process dynamic rules. A malicious user with edit access to the spreadsheet can inject arbitrary JavaScript, which will execute with the permissions of the user running the script.
+2. **Regular Expression Denial of Service (ReDoS):** The regex compilation function does not escape user-supplied strings from the configuration sheet, allowing an attacker to input crafted strings that cause catastrophic backtracking, potentially freezing the script and exhausting execution limits.
+
+## Setup for Testing
+1. Create a new Google Sheet.
+2. Open `Extensions > Apps Script` and paste the contents of `vulnerable_processor.gs`.
+3. Create a sheet named `Config` and another named `Data`.
+4. Add malicious payloads in the `Config` sheet to observe the vulnerabilities in a safe, sandboxed environment.
