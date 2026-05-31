@@ -89,3 +89,91 @@ This script is designed for Capture The Flag (CTF) challenges, code reviews, and
 2. Open `Extensions > Apps Script` and paste the contents of `vulnerable_processor.gs`.
 3. Create a sheet named `Config` and another named `Data`.
 4. Add malicious payloads in the `Config` sheet to observe the vulnerabilities in a safe, sandboxed environment.
+Order Management System (Google Apps Script)
+A comprehensive, automated Google Sheets-based Order Management System (OMS) designed to handle e-commerce workflows from order entry to final dispatch. This Google Apps Script project automates data validation, inventory lookups, financial calculations, label generation preparation, and dispatch tracking.
+
+🌟 Key Features
+Automated Validation: Real-time checking of mandatory fields with visual red-cell highlighting and inline error logs (e.g., "Missing: Full Name, SKU not found").
+
+Dynamic Order IDs: Automatically generates continuous, brand-specific internal order numbers (e.g., BRND1001), filling gaps when rows are deleted.
+
+Financial Calculations: Live currency conversion via external API, combined with country-specific shipping charges and "Magic Number" profit/expense formulas.
+
+Inventory Synchronization: Looks up Vendor SKUs via a Mapping Table, retrieves real-time product costs, available stock, and generates in-cell product images.
+
+Fulfillment Pipeline: Seamlessly moves orders through a structured pipeline: New Orders ➔ All Orders ➔ stockcheckRTS ➔ Create Labels ➔ Dispatched ➔ Dispatch History.
+
+Label Generation: Formats and exports payload data for major carriers like Shiprocket and Shipglobal.
+
+Amazon Exports: Server-side generation of Amazon upload files in TXT and base64-encoded XLSX formats.
+
+Custom UI: Beautifully styled, interactive HTML modal popups for duplicate warnings, push confirmations, and system alerts.
+
+📑 Sheet Architecture
+The system relies on a specific set of sheet tabs to segment the workflow:
+
+New_Orders: The intake sheet for raw orders. Applies validations, lookups, and auto-generates internal IDs.
+
+All Orders: The master database. Orders are pushed here once 100% validated and free of duplicates.
+
+Config: The control center for dropdown menus, brand prefixes, country shipping rules, and sequence counters.
+
+stockcheckRTS: The holding queue where warehouse staff verify physical stock ("OK", "Faulty", "Not Found").
+
+CreateLabels: Orders cleared from stockcheck land here to have tracking numbers attached.
+
+Dispatched & DispatchHistory: Tracks completed orders, courier names, packet counts, and pickup dates.
+
+Inventory & MatchingTable: (Can be external) Maps Portal SKUs to Vendor SKUs and tracks global stock, location, and cost.
+
+🚀 Setup & Installation
+Prepare the Google Sheet: Create a Google Sheet and ensure all the tabs listed in the Sheet Architecture section exist.
+
+Open Apps Script: Go to Extensions > Apps Script.
+
+Add the Code:
+
+Create a file named new_order.gs and paste the main system code.
+
+Create a file named labels.gs and paste the label generation code.
+
+(If applicable) Add your HTML files (e.g., AmazonDialog.html, 4ShipGlobalANDrockethtml.html) via File > Add > HTML.
+
+Configure IDs: Locate the [REDACTED_...] placeholders at the top of the scripts and replace them with your actual Google Sheet IDs and Sheet Names.
+
+Initialize System:
+
+Refresh the Google Sheet.
+
+Click the new Master Workflow or Order Manager menu at the top.
+
+Select Setup System to apply dropdown validations and structural headers automatically.
+
+Select Install Workflow change trigger to ensure background syncs run continuously.
+
+🛠 Usage Guide
+The script generates two custom menus in the Google Sheets toolbar:
+
+⚙ Master Workflow
+Setup System: Initializes columns, data validations, and defaults.
+
+Create Picklist: Generates a picking list for warehouse staff from the current queue.
+
+Create Labels: Opens the Shiprocket/Shipglobal label generation UI.
+
+StockChecked: Processes warehouse inputs, moving "OK" items to CreateLabels and halting "Faulty" ones.
+
+Update Reserve: Calculates PENDING_RESERVE for low-stock scenarios.
+
+Send to StockCheckRTS: Pushes pending, in-stock items from All Orders into the physical picking queue.
+
+📦 Order Manager
+Apply All Validations: Refreshes dropdowns across the New_Orders sheet.
+
+Regenerate All Order IDs: Re-sequences brand prefixes if rows were deleted manually.
+
+Push Selected to AllOrders: Scans for missing fields, checks for duplicates, and safely pushes clean data to the master sheet.
+
+Generate Amazon Sheet: Builds TXT/XLSX upload files for tracking updates.
+
+Sort Dispatched / Dispatch History: Organizes tracking sheets by pickup date and computes daily courier packet counts.
