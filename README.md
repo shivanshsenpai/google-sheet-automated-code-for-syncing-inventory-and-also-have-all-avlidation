@@ -177,3 +177,35 @@ Push Selected to AllOrders: Scans for missing fields, checks for duplicates, and
 Generate Amazon Sheet: Builds TXT/XLSX upload files for tracking updates.
 
 Sort Dispatched / Dispatch History: Organizes tracking sheets by pickup date and computes daily courier packet counts.
+# Google Sheets Design & Inventory Manager
+
+A Google Apps Script designed to automate and clean product catalog data within Google Sheets. This script processes a "DesignSheet" to extract identifiers, categorize items, fix broken image links, and manage duplicate entries. 
+
+## Features
+
+* **SKU Processing:** Automatically extracts design codes from SKUs using regex patterns (e.g., `GBB-D3-CZ-2.2` → `D3`).
+* **Smart Categorization:** Detects product categories from item names using greedy regex matching against a dedicated `Configuration` sheet.
+* **URL Correction:** Finds and fixes common broken image URL patterns (e.g., misconfigured Amazon or Flipkart links).
+* **Automated Image Rendering:** Converts valid image URLs into Google Sheets `=IMAGE()` formulas, loading them in batches for high-performance rendering.
+* **Duplicate Detection:** Identifies and flags size-aware duplicates (keeping size variants separate from true duplicates).
+* **Data Cleanup:** Sorts the sheet alphabetically by category and code, and includes utilities to batch-remove skipped or duplicate rows.
+
+## Sheet Structure Requirements
+
+The script expects a sheet named `DesignSheet` with the following column structure:
+* **A:** SKU
+* **B:** ITEM_NAME
+* **C:** IMAGE
+* **D:** Design_Category
+* **E:** DesignCode
+* **F:** IMAGE_URL
+
+The script also expects a `Configuration` sheet with `Design_Category` and `Design_Keyword` columns to power the categorization logic.
+
+## Setup Instructions
+
+1. Open your Google Sheet.
+2. Go to **Extensions > Apps Script**.
+3. Clear any existing code and paste the contents of `Code.gs` into the editor.
+4. Save the project.
+5. *(Optional but recommended)* Link the functions to a custom menu in your `onOpen()` trigger for easy execution directly from the spreadsheet UI.
